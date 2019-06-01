@@ -4,6 +4,7 @@ import (
 	"errors"
 	"database/sql"
 	"fmt"
+	"strings"
 	
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/hashicorp/raft"
@@ -34,6 +35,10 @@ func NewSqlite3Store(dataSourceName string) (*Sqlite3Store, error) {
 
 // New uses the supplied dataSourceName to open the sqlite3 and prepare it for use as a raft backend.
 func New(dataSourceName string) (*Sqlite3Store, error) {
+	if strings.Index(dataSourceName, "?") == -1 {
+		const extra = "_busy_timeout=30000"//"&_journal_mode=WAL&_synchronous=NORMAL"
+		dataSourceName = fmt.Sprintf("%s?%s", dataSourceName, extra)
+	}
 	// Try to open and connect
 	db, err := sql.Open("sqlite3", dataSourceName)
 	if err != nil {
@@ -224,7 +229,7 @@ func (s *Sqlite3Store) DeleteRange(min, max uint64) error {
 
 // Set is used to set a key/value set outside of the raft log
 func (s *Sqlite3Store) Set(k, v []byte) error {
-	query := fmt.Sprintf("insert into %s(id, value)values(?, ?)", dbConf)
+	query := fmt.Sprintf("replace into %s(id, value)values(?, ?)", dbConf)
 	stmt, err := s.db.Prepare(query)
 	if err != nil {
 		return err
