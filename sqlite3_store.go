@@ -36,7 +36,7 @@ func NewSqlite3Store(dataSourceName string) (*Sqlite3Store, error) {
 // New uses the supplied dataSourceName to open the sqlite3 and prepare it for use as a raft backend.
 func New(dataSourceName string) (*Sqlite3Store, error) {
 	if strings.Index(dataSourceName, "?") == -1 {
-		const extra = "_busy_timeout=30000"//"&_journal_mode=WAL&_synchronous=NORMAL"
+		const extra = "_busy_timeout=30000&_journal_mode=WAL"//"&_synchronous=NORMAL"
 		dataSourceName = fmt.Sprintf("%s?%s", dataSourceName, extra)
 	}
 	// Try to open and connect
