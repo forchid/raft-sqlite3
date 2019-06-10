@@ -4,9 +4,11 @@ import (
 	"errors"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 	
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 	"github.com/hashicorp/raft"
 )
 
@@ -36,7 +38,7 @@ func NewSqlite3Store(dataSourceName string) (*Sqlite3Store, error) {
 // New uses the supplied dataSourceName to open the sqlite3 and prepare it for use as a raft backend.
 func New(dataSourceName string) (*Sqlite3Store, error) {
 	if strings.Index(dataSourceName, "?") == -1 {
-		const extra = "_busy_timeout=30000"//"&_journal_mode=WAL&_synchronous=NORMAL"
+		const extra = "_busy_timeout=30000&_journal_mode=WAL"//"&_synchronous=NORMAL"
 		dataSourceName = fmt.Sprintf("%s?%s", dataSourceName, extra)
 	}
 	// Try to open and connect
@@ -216,6 +218,30 @@ func (s *Sqlite3Store) StoreLogs(logs []*raft.Log) (err error) {
 
 // DeleteRange is used to delete logs within a given range inclusively.
 func (s *Sqlite3Store) DeleteRange(min, max uint64) error {
+	// Delete range by batch for database locked issue
+	// @since 2019-06-11 little-pan
+	a, batch := min, uint64(999)
+	b := uint64(math.Min(float64(a + batch), float64(max - a + uint64(1))))
+	for {
+		if err := s.doDeleteRange(a, b); err != nil {
+			if err.(sqlite3.Error).Code == sqlite3.ErrBusy {
+				// Try to do again when busy
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			return err
+		}
+		
+		a = b + uint64(1)
+		if a > max {
+			return nil
+		}
+		
+		b += uint64(math.Min(float64(a + batch), float64(max - a + uint64(1))))
+	}
+}
+
+func (s *Sqlite3Store) doDeleteRange(min, max uint64) error {
 	query := fmt.Sprintf("delete from %s where id >= ? and id <= ?", dbLogs)
 	stmt, err := s.db.Prepare(query)
 	if err != nil {
