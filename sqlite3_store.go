@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 	
-	"github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/hashicorp/raft"
 )
 
@@ -180,6 +180,21 @@ func (s *Sqlite3Store) StoreLog(log *raft.Log) error {
 
 // StoreLogs is used to store a set of raft logs
 func (s *Sqlite3Store) StoreLogs(logs []*raft.Log) (err error) {
+	// Try to do when busy
+	// @since 2019-06-11 little-pan
+	for {
+		if err = s.doStoreLogs(logs); err != nil {
+			if waitIfBusy(err) {
+				continue
+			}
+			return err
+		}
+		
+		return nil
+	}
+}
+
+func (s *Sqlite3Store) doStoreLogs(logs []*raft.Log) (err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return
@@ -224,9 +239,7 @@ func (s *Sqlite3Store) DeleteRange(min, max uint64) error {
 	b := uint64(math.Min(float64(a + batch), float64(max - a + uint64(1))))
 	for {
 		if err := s.doDeleteRange(a, b); err != nil {
-			if err.(sqlite3.Error).Code == sqlite3.ErrBusy {
-				// Try to do again when busy
-				time.Sleep(100 * time.Millisecond)
+			if waitIfBusy(err) {
 				continue
 			}
 			return err
@@ -239,6 +252,16 @@ func (s *Sqlite3Store) DeleteRange(min, max uint64) error {
 		
 		b += uint64(math.Min(float64(a + batch), float64(max - a + uint64(1))))
 	}
+}
+
+func waitIfBusy(err error) bool {
+	if strings.Index(err.Error(), "database is locked") != -1 {
+		// Try to do again when busy
+		time.Sleep(250 * time.Millisecond)
+		return true
+	}
+	
+	return false
 }
 
 func (s *Sqlite3Store) doDeleteRange(min, max uint64) error {
