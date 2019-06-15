@@ -4,15 +4,18 @@ import (
 	"errors"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
+	"os"
 	"strings"
 	"time"
 	
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 	"github.com/hashicorp/raft"
 )
 
 const (
+	tag    = "raftsqlite3"
 	// Table names we perform transactions in
 	dbLogs = "logs"
 	dbConf = "conf"
@@ -29,6 +32,7 @@ var (
 type Sqlite3Store struct {
 	// db is the underlying handle to the db.
 	db *sql.DB
+	logger *log.Logger
 }
 
 func NewSqlite3Store(dataSourceName string) (*Sqlite3Store, error) {
@@ -37,11 +41,13 @@ func NewSqlite3Store(dataSourceName string) (*Sqlite3Store, error) {
 
 // New uses the supplied dataSourceName to open the sqlite3 and prepare it for use as a raft backend.
 func New(dataSourceName string) (*Sqlite3Store, error) {
+	logger := log.New(os.Stderr, "", log.LstdFlags)
 	if strings.Index(dataSourceName, "?") == -1 {
 		const extra = "_busy_timeout=30000&_journal_mode=WAL"//"&_synchronous=NORMAL"
 		dataSourceName = fmt.Sprintf("%s?%s", dataSourceName, extra)
 	}
 	// Try to open and connect
+	logger.Printf("[INFO ] %s: Open %s", tag, dataSourceName)
 	db, err := sql.Open("sqlite3", dataSourceName)
 	if err != nil {
 		return nil, err
@@ -50,6 +56,7 @@ func New(dataSourceName string) (*Sqlite3Store, error) {
 	// Create the new store
 	store := &Sqlite3Store{
 		db: db,
+		logger: logger,
 	}
 
 	// If the store was opened read-only, don't try and create tables
@@ -184,7 +191,7 @@ func (s *Sqlite3Store) StoreLogs(logs []*raft.Log) (err error) {
 	// @since 2019-06-11 little-pan
 	for {
 		if err = s.doStoreLogs(logs); err != nil {
-			if waitIfBusy(err) {
+			if s.waitIfBusy("StoreLogs()", err, 100 * time.Millisecond) {
 				continue
 			}
 			return err
@@ -239,7 +246,7 @@ func (s *Sqlite3Store) DeleteRange(min, max uint64) error {
 	b := uint64(math.Min(float64(a + batch), float64(max - a + uint64(1))))
 	for {
 		if err := s.doDeleteRange(a, b); err != nil {
-			if waitIfBusy(err) {
+			if s.waitIfBusy("DeleteRange()", err, 250 * time.Millisecond) {
 				continue
 			}
 			return err
@@ -254,10 +261,12 @@ func (s *Sqlite3Store) DeleteRange(min, max uint64) error {
 	}
 }
 
-func waitIfBusy(err error) bool {
-	if strings.Index(err.Error(), "database is locked") != -1 {
+func (s *Sqlite3Store) waitIfBusy(method string, err error, sleep time.Duration) bool {
+	e := err.(sqlite3.Error)
+	if e.Code == sqlite3.ErrLocked || e.Code == sqlite3.ErrBusy {
 		// Try to do again when busy
-		time.Sleep(250 * time.Millisecond)
+		log.Printf("[WARN ] %s: %s %s, sleep %s then retry", tag, method, err, sleep)
+		time.Sleep(sleep)
 		return true
 	}
 	
